@@ -1,70 +1,149 @@
 from associations import Associations
 from constraints import Constraints
+from random import random
+from itertools import izip_longest, chain, ifilter
+from collections import Counter
+from time import time
+import logging
 
 
 class Loose(object):
 
-    def __init__(self, table, constraints, fragments):
+    def __init__(self, table, constraints, fragments, skip_probability=0):
         self._table, self._tuples = table, len(table)
+        self._skip_probability = skip_probability
         self._fragments = fragments
         self._constraints = Constraints(constraints, fragments)
 
     def _get_group_data(self, fragment_id, group_id):
-        return (self._table[row_id] for row_id in self._associations.get_group(fragment_id, group_id))
+        return ((row_id, self._table[row_id]) for row_id in self._associations.get_group(fragment_id, group_id))
 
-    def _get_groups(self, fragment_id, exclude_full=False):
-        for group_id in xrange(self._max_groups[fragment_id]):
-            group = self._associations.get_group(fragment_id, group_id)
-            if not (exclude_full and len(group) >= self._k_list[fragment_id]):
-                yield group_id
+    def _get_nonfull_groups(self, fragment_id, allow_skips=True):
+        return (group_id for group_id in xrange(self._first_nonfull[fragment_id], self._max_groups[fragment_id])
+                if not self._is_group_full(fragment_id, group_id)
+                if not allow_skips or not self._skip_probability or random() > self._skip_probability)
+
+    def _is_group_full(self, fragment_id, group_id):
+        return self._associations.get_group_size(fragment_id, group_id) >= self._k_list[fragment_id]
 
     def _are_groups_alike(self, group1, group2, fragment_id, constraint_id):
         return any(self._constraints.are_rows_alike_for(row1, row2, fragment_id, constraint_id)
-                   for row1 in self._get_group_data(fragment_id, group1)
-                   for row2 in self._get_group_data(fragment_id, group2))
+                   for _, row1 in self._get_group_data(fragment_id, group1)
+                   for _, row2 in self._get_group_data(fragment_id, group2))
 
     def _check_group_heterogenity(self, row, fragment_id, group_id):
         return not any(self._constraints.are_rows_alike(row, other_row, fragment_id)
-                       for other_row in self._get_group_data(fragment_id, group_id))
+                       for _, other_row in self._get_group_data(fragment_id, group_id))
 
-    def _check_association_heterogenity(self, association, fragment_id, group_id):
-        return not any(self._associations.exists(fragment_id, group_id, other_fragment, other_group)
-                       for other_fragment, other_group in enumerate(association))
+    def _check_association_heterogenity(self, association, fragment_id):
+        return not any(self._associations.exists(fragment_id, association[fragment_id], other_fragment, other_group)
+                       for other_fragment, other_group in enumerate(association)
+                       if other_fragment is not fragment_id)
 
-    def _check_deep_heterogenity(self, row, association, fragment_id, group_id):
-        extended = association + [group_id]
-        return all(all(all(any(not self._are_groups_alike(extended[frag_2], other_association[frag_2], frag_2, constraint_id)
+    def _check_deep_heterogenity(self, row, association, fragment_id):
+        return all(all(all(any(not self._are_groups_alike(association[frag_2], other_association[frag_2], frag_2, constraint_id)
                                for frag_2 in self._constraints.involved_fragments_for(constraint_id)
                                if frag_2 is not frag_1)
-                           for other_association in self._associations.get_associated(frag_1, extended[frag_1]))
+                           for other_association in self._associations.get_associated(frag_1, association[frag_1]))
                        for frag_1 in self._constraints.involved_fragments_for(constraint_id))
-                   for constraint_id in self._constraints.completed_with(fragment_id))
+                   for constraint_id in self._constraints.completed_constraints_for(fragment_id, len(association)))
 
-    def _check_heterogenity(self, row, association, fragment_id, group_id):
-        return (self._check_group_heterogenity(row, fragment_id, group_id) and
-                self._check_association_heterogenity(association, fragment_id, group_id) and
-                self._check_deep_heterogenity(row, association, fragment_id, group_id))
+    def _check_heterogenity(self, row, association, fragment_id):
+        return (self._check_group_heterogenity(row, fragment_id, association[fragment_id]) and
+                self._check_association_heterogenity(association, fragment_id) and
+                self._check_deep_heterogenity(row, association, fragment_id))
 
     def _extend_association(self, row, association=[]):
         fragment_id = len(association)
         if (fragment_id == len(self._fragments)):
             return association
 
-        for group_id in self._get_groups(fragment_id, True):
-            if self._check_heterogenity(row, association, fragment_id, group_id):
+        for group_id in self._get_nonfull_groups(fragment_id):
+            if self._check_heterogenity(row, association + [group_id], fragment_id):
                 result = self._extend_association(row, association + [group_id])
                 if result is not None:
                     return result
 
-    def associate(self, k_list):
+    def _neighbours(self, n, hi, lo=0):
+        return ifilter(lambda x: x is not None,
+                       chain.from_iterable(izip_longest(xrange(n - 1, lo - 1, -1), xrange(n + 1, hi))))
+
+    def _full_neighbours_groups(self, fragment_id, group_id):
+        return ifilter(lambda new_group_id: self._is_group_full(fragment_id, new_group_id),
+                       self._neighbours(group_id, self._max_groups[fragment_id]))
+
+    def _redistribute_group(self, fragment_id, group_id):
+        logging.debug('redistributing group {} in fragment {}'.format(group_id, fragment_id))
+        for row_id, row in self._get_group_data(fragment_id, group_id):
+            association = self._associations[row_id]
+            if association:
+                for new_group_id in self._full_neighbours_groups(fragment_id, group_id):
+                    association[fragment_id] = new_group_id
+                    if self._check_heterogenity(row, association, fragment_id):
+                        logging.debug('fragment {} row {}: group {} -> group {}'.format(fragment_id, row_id, group_id, new_group_id))
+                        self._associations[row_id] = association
+                        break
+                else:
+                    logging.debug('fragment {} row {} : group {} -> not reallocable'.format(fragment_id, row_id, group_id))
+                    self._delete_row(row_id)
+
+    def _delete_row(self, row_id):
+        self._dropped.append(row_id)
+        association = self._associations[row_id]
+        logging.debug('deleting row {} = {}'.format(row_id, association))
+        del self._associations[row_id]
+        for fragment_id, group_id in enumerate(association):
+            if not self._is_group_full(fragment_id, group_id):
+                self._redistribute_group(fragment_id, group_id)
+        logging.debug('row {} deleted'.format(row_id))
+
+    def _update_first_nonnull(self, association):
+        for fragment_id, group_id in enumerate(association):
+            if group_id == self._first_nonfull[fragment_id]:
+                while (self._is_group_full(fragment_id, self._first_nonfull[fragment_id])):
+                    self._first_nonfull[fragment_id] += 1
+
+    def associate(self, k_list, print_stats_every=1000):
         self._k_list = k_list
-        self._max_groups = [self._tuples / k for k in self._k_list]
+        self._first_nonfull = [0 for _ in xrange(len(self._fragments))]
+        self._max_groups = map(lambda k: (self._tuples / k) + 2, self._k_list)
         self._associations = Associations(len(self._fragments))
         self._dropped = []
+        started, elapsed = time(), lambda: time() - started
+
         for row_id, row in enumerate(self._table):
+            if not row_id % print_stats_every:
+                logging.info('[{:.2f}s] associating row: {} using first_nonfull: {}'.format(elapsed(), row_id, self._first_nonfull))
+
             association = self._extend_association(row)
             if association is None:
                 self._dropped.append(row_id)
+                logging.warning('row_id {} dropped at first scan. You should increase _max_groups.'.format(row_id))
             else:
                 self._associations[row_id] = association
+                self._update_first_nonnull(association)
+
+        for fragment_id in xrange(len(self._fragments)):
+            for group_id in self._get_nonfull_groups(fragment_id, False):
+                self._redistribute_group(fragment_id, group_id)
+
         return self._associations, self._dropped
+
+    def print_statistics(self):
+        for fragment_id in xrange(len(self._fragments)):
+            print '\nFragment {}'.format(fragment_id)
+            for length, count in Counter(self._associations.get_group_size(fragment_id, group_id)
+                                         for group_id in xrange(self._max_groups[fragment_id])).items():
+                print '{} elements: {} groups'.format(length, count)
+        print '\n{} ({:.3%}) lines dropped: {}'.format(len(self._dropped), float(len(self._dropped)) / self._tuples, self._dropped)
+
+    def bruteforce(self, k_list, trials, show_stats=False):
+        for i in xrange(trials):
+            associations, dropped = self.associate(k_list)
+            if not dropped:
+                logging.info('Found after {} iterations\nSolution: {}'.format(i, associations))
+                if show_stats:
+                    self.print_statistics()
+                return i, associations
+        logging.info('No solution found')
+        return trials

@@ -10,9 +10,12 @@ class Constraints(object):
                               for attribute in fragment}
 
         # drop not relevant constraints
-        all_attributes = set.union(*self._fragments)
+        all_attributes = set.union(set([]), *self._fragments)
         self._constraints = filter(lambda constraint: constraint <= all_attributes,
                                    map(set, constraints))
+
+        self._max_fragment_for = map(lambda c_id: max(self.involved_fragments_for(c_id)),
+                                     xrange(len(self._constraints)))
 
     @memo
     def involved_fragments_for(self, constraint_id):
@@ -24,9 +27,9 @@ class Constraints(object):
                       xrange(len(self._constraints)))
 
     @memo
-    def completed_with(self, fragment_id):
-        return filter(lambda c_id: fragment_id == max(self.involved_fragments_for(c_id)),
-                      xrange(len(self._constraints)))
+    def completed_constraints_for(self, fragment_id, first_excluded_fragment_id):
+        return filter(lambda c_id: self._max_fragment_for[c_id] < first_excluded_fragment_id,
+                      self.constraints_for(fragment_id))
 
     def are_rows_alike_for(self, row1, row2, fragment_id, constraint_id):
         return all(row1[attribute] == row2[attribute]

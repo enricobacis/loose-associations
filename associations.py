@@ -1,5 +1,6 @@
 from collections import defaultdict
 
+
 class Associations(object):
 
     def __init__(self, columns):
@@ -14,7 +15,7 @@ class Associations(object):
 
     def __setitem__(self, key, val):
         if len(val) is not self._columns:
-            raise ValueError("wrong value length")
+            raise ValueError('wrong value length')
         del self[key]
         self._data[key] = val
         for i, v in enumerate(val):
@@ -29,8 +30,20 @@ class Associations(object):
     def get_group(self, fragment_id, group_id):
         return list(self._indices[fragment_id][group_id])
 
+    def get_group_size(self, fragment_id, group_id):
+        return len(self._indices[fragment_id][group_id])
+
+    def _average(self, lst):
+        return 0 if not lst else float(sum(lst)) / len(lst)
+
+    def get_average_group_size_in_fragment(self, fragment_id):
+        return self._average(map(len, filter(None, self._indices[fragment_id].values())))
+
+    def get_average_group_size(self):
+        return self._average(map(self.get_average_group_size_in_fragment, xrange(self._columns)))
+
     def get_associated(self, fragment_id, group_id, select=slice(None)):
-        return [self._data[key][select] for key in self._indices[fragment_id][group_id]]
+        return (self._data[key][select] for key in self._indices[fragment_id][group_id])
 
     def exists(self, fragment1, group1, fragment2, group2):
         return group1 in self.get_associated(fragment2, group2, fragment1)
