@@ -6,6 +6,7 @@ from utils import neighbours
 from time import time
 import logging
 
+
 class Loose:
 
     def __init__(self, table, constraints, fragments):
@@ -141,3 +142,29 @@ class Loose:
                                          for group_id in xrange(self._max_groups[fragment_id])).items():
                 print '{} elements: {} groups'.format(length, count)
         print '\n{} ({:.3%}) lines dropped: {}'.format(len(self._dropped), float(len(self._dropped)) / len(self._table), self._dropped)
+
+
+def main():
+    from argparse import ArgumentParser
+    from exporter import Exporter
+    from tables import SqliteTable
+    import json
+
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+    parser = ArgumentParser(description='Create the loose-associations database.')
+    parser.add_argument('config_file', help='JSON configuration file')
+    args = parser.parse_args()
+
+    with open(args.config_file) as config_file:
+        config = json.load(config_file)
+
+    table = SqliteTable(config['database'], config['table'])
+    loose = Loose(table, config['constraints'], config['fragments'])
+    associations, dropped = loose.associate(config['k_list'], config.get('skip_probability', 0))
+
+    loose.print_statistics()
+    Exporter(table, config['fragments'], associations).to_sqlite(config['output'])
+
+if __name__ == '__main__':
+    main()
