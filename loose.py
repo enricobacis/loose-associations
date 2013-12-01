@@ -1,19 +1,17 @@
 from associations import Associations
 from constraints import Constraints
-from random import random
-from itertools import izip_longest, chain, ifilter
 from collections import Counter
+from random import random
+from utils import neighbours
 from time import time
 import logging
 
+class Loose:
 
-class Loose(object):
-
-    def __init__(self, table, constraints, fragments, skip_probability=0):
-        self._table, self._tuples = table, len(table)
-        self._skip_probability = skip_probability
-        self._fragments = fragments
-        self._constraints = Constraints(constraints, fragments)
+    def __init__(self, table, constraints, fragments):
+        self._table = table
+        self._fragments = map(table.to_indices, fragments)
+        self._constraints = Constraints(map(table.to_indices, constraints), self._fragments)
 
     def _get_group_data(self, fragment_id, group_id):
         return ((row_id, self._table[row_id]) for row_id in self._associations.get_group(fragment_id, group_id))
@@ -38,12 +36,12 @@ class Loose(object):
     def _check_association_heterogenity(self, association, fragment_id):
         return not any(self._associations.exists(fragment_id, association[fragment_id], other_fragment, other_group)
                        for other_fragment, other_group in enumerate(association)
-                       if other_fragment is not fragment_id)
+                       if other_fragment != fragment_id)
 
     def _check_deep_heterogenity(self, row, association, fragment_id):
         return all(all(all(any(not self._are_groups_alike(association[frag_2], other_association[frag_2], frag_2, constraint_id)
                                for frag_2 in self._constraints.involved_fragments_for(constraint_id)
-                               if frag_2 is not frag_1)
+                               if frag_2 != frag_1)
                            for other_association in self._associations.get_associated(frag_1, association[frag_1]))
                        for frag_1 in self._constraints.involved_fragments_for(constraint_id))
                    for constraint_id in self._constraints.completed_constraints_for(fragment_id, len(association)))
@@ -64,18 +62,14 @@ class Loose(object):
                 if result is not None:
                     return result
 
-    def _neighbours(self, n, hi, lo=0):
-        return ifilter(lambda x: x is not None,
-                       chain.from_iterable(izip_longest(xrange(n - 1, lo - 1, -1), xrange(n + 1, hi))))
-
     def _full_neighbours_groups(self, fragment_id, group_id):
-        return ifilter(lambda new_group_id: self._is_group_full(fragment_id, new_group_id),
-                       self._neighbours(group_id, self._max_groups[fragment_id]))
+        return (new_group_id for new_group_id in neighbours(group_id, 0, self._max_groups[fragment_id])
+                if self._is_group_full(fragment_id, new_group_id))
 
     def _redistribute_group(self, fragment_id, group_id):
         logging.debug('redistributing group {} in fragment {}'.format(group_id, fragment_id))
         for row_id, row in self._get_group_data(fragment_id, group_id):
-            association = self._associations[row_id]
+            association = list(self._associations[row_id])
             if association:
                 for new_group_id in self._full_neighbours_groups(fragment_id, group_id):
                     association[fragment_id] = new_group_id
@@ -103,17 +97,20 @@ class Loose(object):
                 while (self._is_group_full(fragment_id, self._first_nonfull[fragment_id])):
                     self._first_nonfull[fragment_id] += 1
 
-    def associate(self, k_list, print_stats_every=1000):
+    def associate(self, k_list, skip_probability=0, **kwargs):
+        print_stats_every = kwargs.get('print_stats_every', 1000)
+        more_groups = kwargs.get('more_groups', 5)
         self._k_list = k_list
+        self._max_groups = [len(self._table) / k + more_groups for k in self._k_list]
         self._first_nonfull = [0 for _ in xrange(len(self._fragments))]
-        self._max_groups = map(lambda k: (self._tuples / k) + 2, self._k_list)
         self._associations = Associations(len(self._fragments))
         self._dropped = []
-        started, elapsed = time(), lambda: time() - started
+        self._skip_probability = skip_probability
+        started = time()
 
         for row_id, row in enumerate(self._table):
-            if not row_id % print_stats_every:
-                logging.info('[{:.2f}s] associating row: {} using first_nonfull: {}'.format(elapsed(), row_id, self._first_nonfull))
+            if row_id and not row_id % print_stats_every:
+                logging.info('[{:.2f}s] associating row: {} using first_nonfull: {}'.format(time() - started, row_id, self._first_nonfull))
 
             association = self._extend_association(row)
             if association is None:
@@ -129,21 +126,18 @@ class Loose(object):
 
         return self._associations, self._dropped
 
+    def associate_with_retries(self, k_list, retries, skip_probability=0.05, **kwargs):
+        for i in xrange(retries):
+            associations, dropped = self.associate(k_list, skip_probability, **kwargs)
+            if not dropped:
+                logging.info('Found after {} iterations\nSolution: {}'.format(i, associations))
+                return associations, i
+        logging.info('No solution found')
+
     def print_statistics(self):
         for fragment_id in xrange(len(self._fragments)):
             print '\nFragment {}'.format(fragment_id)
             for length, count in Counter(self._associations.get_group_size(fragment_id, group_id)
                                          for group_id in xrange(self._max_groups[fragment_id])).items():
                 print '{} elements: {} groups'.format(length, count)
-        print '\n{} ({:.3%}) lines dropped: {}'.format(len(self._dropped), float(len(self._dropped)) / self._tuples, self._dropped)
-
-    def bruteforce(self, k_list, trials, show_stats=False):
-        for i in xrange(trials):
-            associations, dropped = self.associate(k_list)
-            if not dropped:
-                logging.info('Found after {} iterations\nSolution: {}'.format(i, associations))
-                if show_stats:
-                    self.print_statistics()
-                return i, associations
-        logging.info('No solution found')
-        return trials
+        print '\n{} ({:.3%}) lines dropped: {}'.format(len(self._dropped), float(len(self._dropped)) / len(self._table), self._dropped)
