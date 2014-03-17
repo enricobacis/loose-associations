@@ -21,6 +21,9 @@ class BaseTable:
         names = map(itemgetter(0), self.attributes)
         return [a if isinstance(a, int) else names.index(a) for a in attrs]
 
+    def to_names(self, attrs):
+        return [a if isinstance(a, str) else self.attributes[a][0] for a in attrs]
+
 
 class ListTable(BaseTable):
 
@@ -33,18 +36,25 @@ class ListTable(BaseTable):
 class SqliteTable(BaseTable):
 
     def __init__(self, database, tablename, **kwargs):
-        database = database if isinstance(database, sqlite3.Connection) else sqlite3.connect(database)
+        database = sqlite3.connect(database) if isinstance(database, str) else database
         database.text_factory = str
         cursor = database.cursor()
-        query = 'SELECT * FROM %s' % tablename
-        
+        self.attributes = map(itemgetter(1, 2), cursor.execute('pragma table_info(%s)' % tablename).fetchall())
+
+
+        limit = kwargs.get('limit', None)
+        if 'limit' in kwargs:
+            query = 'SELECT * FROM (SELECT * FROM %s ORDER BY random() LIMIT %i)' % (tablename, limit)
+        else:
+            query = 'SELECT * FROM %s' % tablename
+
+
         order_by = kwargs.get('order_by', None)
-        if order_by:
-            query += ' ORDER BY ' + (order_by if isinstance(order_by, str) else ', '.join(order_by))
+        if 'order_by' in kwargs:
+            query += ' ORDER BY ' + ', '.join(self.to_names(order_by))
 
         self._table = cursor.execute(query).fetchall()
         self._tuples = len(self._table)
-        self.attributes = map(itemgetter(1, 2), cursor.execute('pragma table_info(%s)' % tablename).fetchall())
 
 
 class BaseGeneratedTable(BaseTable):

@@ -4,27 +4,40 @@ from utils import average
 
 class Associations(defaultdict):
 
-    def __init__(self, columns):
+    def __init__(self, k_list):
         defaultdict.__init__(self, tuple)
-        self._columns = columns
-        self._indices = [defaultdict(set) for _ in xrange(columns)]
+        self._k_list  = k_list
+        self._columns = len(self._k_list)
+        self._indices = [defaultdict(set) for _ in xrange(self._columns)]
+        self._fulls   = [set() for _ in xrange(self._columns)]
 
     def __setitem__(self, key, val):
-        if len(val) != self._columns:
-            raise ValueError('wrong value length')
+        if val and len(val) != self._columns:
+            raise ValueError('wrong value length for %s. Expected %i' % (val, self._columns))
         del self[key]
         defaultdict.__setitem__(self, key, tuple(val))
         for i, v in enumerate(val):
-            self._indices[i][v].add(key)
+            group = self._indices[i][v]
+            group.add(key)
+            size = len(group)
+            if size == self._k_list[i]:
+                self._fulls[i].add(v)
 
     def __delitem__(self, key):
-        if key in self: 
+        if key in self:
             for i, v in enumerate(self[key]):
-                self._indices[i][v].remove(key)
+                group = self._indices[i][v]
+                size = len(group)
+                if size == self._k_list[i]:
+                    self._fulls[i].remove(v)
+                group.remove(key)
             defaultdict.__delitem__(self, key)
 
+    def is_group_full(self, fragment_id, group_id):
+        return group_id in self._fulls[fragment_id]
+
     def get_group(self, fragment_id, group_id):
-        return list(self._indices[fragment_id][group_id])
+        return self._indices[fragment_id][group_id].copy()
 
     def get_group_size(self, fragment_id, group_id):
         return len(self._indices[fragment_id][group_id])
