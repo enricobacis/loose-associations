@@ -19,11 +19,6 @@ class Loose:
         return ((row_id, self._table[row_id]) for row_id in self._associations.get_group(fragment_id, group_id))
 
     def _get_nonfull_groups(self, fragment_id, allow_skips=True, **kwargs):
-        # if 'row_id' in kwargs and self._orderings[fragment_id]:
-        #     groups_to_check = neighbours(self._orderings[fragment_id].index(kwargs['row_id']) / self._k_list[fragment_id],
-        #                                  self._first_nonfull[fragment_id], self._max_groups[fragment_id])
-        # else
-
         groups_to_check = xrange(self._first_nonfull[fragment_id], self._last_usable[fragment_id] + 1)
         return (group_id for group_id in groups_to_check
                 if not self._associations.is_group_full(fragment_id, group_id))
@@ -78,28 +73,29 @@ class Loose:
 
     def _check_deep_heterogenity_of_associated_groups(self, row, fragment_id, group_id):
         constraints_for = set(self._constraints.constraints_for(fragment_id))
-        # prendo tutti i collegamenti uscenti preesistenti
+        # take all the pre-existing associations in (fragment_id, group_id)
         for association1 in self._associations.get_associated(fragment_id, group_id):
-            # per ogni frammento
+            # for every fragment1
             for fragment1 in xrange(len(self._fragments)):
-                # che non sia quello da cui siamo usciti
+                # which is not fragment_id
                 if fragment1 != fragment_id:
-                    # posso gia' determinare i vincoli che possono rompersi
-                    # solo i vincoli che sussistono sia su quello che abbiamo cambiato sia sull'associato
+                    # I already know which constraints can break
+                    # only the ones that insists on both fragment_id and fragment1
                     constraints_to_check = constraints_for & set(self._constraints.constraints_for(fragment1))
-                    # prendo un'altra associazione cha va da fragment1 , association1[fragment1]
+                    # take another association, associated with (fragment1 , association1[fragment1])
                     for association2 in self._associations.get_associated(fragment1, association1[fragment1]):
-                        # che non sia la stessa di quella gia' presa
+                        # which is not association1
                         if association1 != association2:
-                            # per ogni vincolo che puo' rompersi
+                            # for every constraint that can break
                             for constraint_id in constraints_to_check:
-                                # esiste un frammento (che insiste sul vincolo)
+                                # there must exists a fragment2 (insisting on the constraint)
                                 for fragment2 in self._constraints.involved_fragments_for(constraint_id):
-                                    # che non sia lo stesso di fragment1
+                                    # which is not fragment2
                                     if fragment2 != fragment1:
-                                        # che non lo fa rompere
+                                        # fow which the constraint holds
                                         if not self._are_groups_alike(association1[fragment2], association2[fragment2],
-                                            # se il fragment2 e' fragment_id allora lo informo anche che voglio aggiungere la riga proprio li
+                                            # if fragment2 is the same as fragment_id, we inform the method are_groups_alike
+                                            # about the fact that we want to insert the tuple in that fragment
                                             fragment2, constraint_id, row if (fragment2 == fragment_id) else None):
                                             break
                                 else:
@@ -170,18 +166,9 @@ class Loose:
         self._update_first_nonfull(association)
         self._update_last_usable(association)
 
-    # def _create_orderings(self, order_by):
-    #     self._orderings = defaultdict(list)
-    #     for fragment_id, fragment in enumerate(self._fragments):
-    #         fragment_order = [x for x in order_by if x in fragment]
-    #         if fragment_order:
-    #             select = lambda row_id: itemgetter(*fragment_order)(self._table[row_id])
-    #             self._orderings[fragment_id] = sorted(xrange(self.tuples), key=select)
-
     def associate(self, k_list, skip_probability=0, **kwargs):
         assert(len(k_list) == len(self._fragments))
         print_stats_every = kwargs.get('print_stats_every', 1000)
-        # self._create_orderings(self._table.to_indices(kwargs.get('order_by', [])))
 
         self._k_list = k_list
         self._first_nonfull = [0 for _ in xrange(len(self._fragments))]
